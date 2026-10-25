@@ -356,6 +356,8 @@
 
     // La chiave viene inserita al momento della pubblicazione dalla GitHub Action (secret TAVILY_API_KEY).
     const TAVILY_API_KEY = '__TAVILY_API_KEY__';
+    // Chiave Pexels (gratuita) per la scheda IMMAGINI: secret PEXELS_API_KEY.
+    const PEXELS_API_KEY = '__PEXELS_API_KEY__';
 
     var TABS = ['all', 'images', 'videos'];
     var PREFS_KEY = 'clicksearch:prefs';
@@ -577,6 +579,26 @@
         });
     }
 
+    function hasPexels() { return PEXELS_API_KEY.indexOf('__') !== 0 && PEXELS_API_KEY.length > 8; }
+
+    function fetchPexels(q) {
+        var ck = 'clicksearch:pexels:' + q.toLowerCase();
+        try { var hit = sessionStorage.getItem(ck); if (hit) return Promise.resolve(JSON.parse(hit)); } catch (e) {}
+        var url = 'https://api.pexels.com/v1/search?per_page=80&locale=it-IT&query=' + encodeURIComponent(q);
+        return fetch(url, { headers: { 'Authorization': PEXELS_API_KEY } }).then(function (res) {
+            return res.json().catch(function () { return {}; }).then(function (data) {
+                if (res.status === 429) throw new Error('rate_limited');
+                if (res.status === 401 || res.status === 403) throw new Error('bad_key');
+                if (!res.ok) throw new Error('http_' + res.status);
+                var out = { images: (data.photos || []).map(function (ph) {
+                    return { url: (ph.src && (ph.src.large || ph.src.medium)) || '', alt: ph.alt || '', page: ph.url || '' };
+                }) };
+                try { sessionStorage.setItem(ck, JSON.stringify(out)); } catch (e) {}
+                return out;
+            });
+        });
+    }
+
     function run() {
         var q = currentQ, tab = activeTab, id = ++reqId;
         document.title = q + ' – clicksearch';
@@ -585,7 +607,8 @@
         resultsEl.innerHTML = '';
         setStatus('Cerco…', 'loading');
         runBtn.disabled = true;
-        fetchSearch(q, tab).then(function (data) {
+        var job = (tab === 'images' && hasPexels()) ? fetchPexels(q) : fetchSearch(q, tab);
+        job.then(function (data) {
             if (id !== reqId) return;
             setStatus('');
             render(tab, data);
@@ -617,7 +640,7 @@
     function normImages(list) {
         return (Array.isArray(list) ? list : []).map(function (im) {
             if (typeof im === 'string') return { url: im, alt: '' };
-            return im ? { url: im.url || im.image_url || '', alt: im.description || im.alt || '' } : null;
+            return im ? { url: im.url || im.image_url || '', alt: im.description || im.alt || '', page: im.page || '' } : null;
         }).filter(function (im) { return im && isHttp(im.url); });
     }
     function imgNode(src, alt) {
@@ -670,7 +693,7 @@
         var grid = el('div', 'grid');
         images.forEach(function (im) {
             var a = el('a', 'img-card');
-            a.href = im.url; a.target = '_blank'; a.rel = 'noopener'; a.title = im.alt;
+            a.href = im.page || im.url; a.target = '_blank'; a.rel = 'noopener'; a.title = im.alt;
             var img = imgNode(im.url, im.alt);
             img.addEventListener('error', function () { a.remove(); });
             a.appendChild(img);

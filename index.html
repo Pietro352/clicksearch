@@ -356,8 +356,7 @@
 
     // La chiave viene inserita al momento della pubblicazione dalla GitHub Action (secret TAVILY_API_KEY).
     const TAVILY_API_KEY = '__TAVILY_API_KEY__';
-    // Chiave Pexels (gratuita) per la scheda IMMAGINI: secret PEXELS_API_KEY.
-    const PEXELS_API_KEY = '__PEXELS_API_KEY__';
+    // Le immagini extra arrivano da Wikimedia Commons: gratuito, senza chiave.
 
     var TABS = ['all', 'images', 'videos'];
     var PREFS_KEY = 'clicksearch:prefs';
@@ -579,23 +578,69 @@
         });
     }
 
-    function hasPexels() { return PEXELS_API_KEY.indexOf('__') !== 0 && PEXELS_API_KEY.length > 8; }
+    /* ---------- Immagini da Wikimedia Commons (gratis, senza chiave) ---------- */
+    function commonsPage(q, offset) {
+        var url = 'https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrlimit=50'
+            + '&gsroffset=' + offset + '&gsrsearch=' + encodeURIComponent(q + ' filetype:bitmap')
+            + '&prop=imageinfo&iiprop=url|mime&iiurlwidth=500&format=json&origin=*';
+        return fetch(url).then(function (res) {
+            if (!res.ok) throw new Error('http_' + res.status);
+            return res.json();
+        }).then(function (data) {
+            var map = (data && data.query && data.query.pages) || {};
+            var pages = Object.keys(map).map(function (k) { return map[k]; });
+            pages.sort(function (x, y) { return (x.index || 0) - (y.index || 0); });
+            return pages.map(function (pg) {
+                var ii = pg.imageinfo && pg.imageinfo[0];
+                if (!ii || !/^image\/(jpeg|png|webp|gif)$/.test(ii.mime || '')) return null;
+                return {
+                    url: ii.thumburl || ii.url,
+                    alt: String(pg.title || '').replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, ''),
+                    page: ii.descriptionurl || ''
+                };
+            }).filter(Boolean);
+        });
+    }
 
-    function fetchPexels(q) {
-        var ck = 'clicksearch:pexels:' + q.toLowerCase();
+    function fetchCommons(q, pages) {
+        var ck = 'clicksearch:commons:' + pages + ':' + q.toLowerCase();
         try { var hit = sessionStorage.getItem(ck); if (hit) return Promise.resolve(JSON.parse(hit)); } catch (e) {}
-        var url = 'https://api.pexels.com/v1/search?per_page=80&locale=it-IT&query=' + encodeURIComponent(q);
-        return fetch(url, { headers: { 'Authorization': PEXELS_API_KEY } }).then(function (res) {
-            return res.json().catch(function () { return {}; }).then(function (data) {
-                if (res.status === 429) throw new Error('rate_limited');
-                if (res.status === 401 || res.status === 403) throw new Error('bad_key');
-                if (!res.ok) throw new Error('http_' + res.status);
-                var out = { images: (data.photos || []).map(function (ph) {
-                    return { url: (ph.src && (ph.src.large || ph.src.medium)) || '', alt: ph.alt || '', page: ph.url || '' };
-                }) };
-                try { sessionStorage.setItem(ck, JSON.stringify(out)); } catch (e) {}
-                return out;
+        var jobs = [];
+        for (var i = 0; i < pages; i++) jobs.push(commonsPage(q, i * 50));
+        return Promise.all(jobs).then(function (parts) {
+            var out = [].concat.apply([], parts);
+            try { sessionStorage.setItem(ck, JSON.stringify(out)); } catch (e) {}
+            return out;
+        });
+    }
+
+    function mergeImages(lists) {
+        var seen = {}, out = [];
+        lists.forEach(function (list) {
+            normImages(list).forEach(function (im) {
+                if (seen[im.url]) return;
+                seen[im.url] = 1; out.push(im);
             });
+        });
+        return out;
+    }
+
+    function fetchAny(q, tab) {
+        if (tab === 'videos') return fetchSearch(q, tab);
+        var commons = fetchCommons(q, tab === 'images' ? 2 : 1).catch(function () { return []; });
+        var web = fetchSearch(q, tab);
+        if (tab === 'images') {
+            return Promise.all([web.then(function (d) { return { ok: d }; }, function (e) { return { err: e }; }), commons])
+                .then(function (r) {
+                    var imgs = mergeImages([r[0].ok ? r[0].ok.images : [], r[1]]);
+                    if (!imgs.length && r[0].err) throw r[0].err;
+                    return { images: imgs, results: [] };
+                });
+        }
+        return Promise.all([web, commons]).then(function (r) {
+            var d = r[0] || {};
+            d.images = mergeImages([d.images, r[1]]);
+            return d;
         });
     }
 
@@ -607,7 +652,7 @@
         resultsEl.innerHTML = '';
         setStatus('Cerco…', 'loading');
         runBtn.disabled = true;
-        var job = (tab === 'images' && hasPexels()) ? fetchPexels(q) : fetchSearch(q, tab);
+        var job = fetchAny(q, tab);
         job.then(function (data) {
             if (id !== reqId) return;
             setStatus('');

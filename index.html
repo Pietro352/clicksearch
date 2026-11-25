@@ -354,8 +354,8 @@
 (function () {
     'use strict';
 
-    // La chiave viene inserita al momento della pubblicazione dalla GitHub Action (secret TAVILY_API_KEY).
-    const TAVILY_API_KEY = '__TAVILY_API_KEY__';
+    // La chiave viene inserita al momento della pubblicazione dalla GitHub Action (secret SERPER_API_KEY).
+    const SERPER_API_KEY = '__SERPER_API_KEY__';
     // Le immagini extra arrivano da Wikimedia Commons: gratuito, senza chiave.
 
     var TABS = ['all', 'images', 'videos'];
@@ -543,37 +543,52 @@
         if (s.q) { currentQ = s.q; input.value = s.q; run(); } else freshPage();
     });
 
-    /* ---------- Ricerca (Tavily) ---------- */
-    function hasKey() { return TAVILY_API_KEY.indexOf('__') !== 0 && TAVILY_API_KEY.length > 8; }
+    /* ---------- Ricerca (Serper) ---------- */
+    function hasKey() { return SERPER_API_KEY.indexOf('__') !== 0 && SERPER_API_KEY.length > 8; }
+
+    function serperEndpoint(tab) {
+        return 'https://google.serper.dev/' + (tab === 'images' ? 'images' : tab === 'videos' ? 'videos' : 'search');
+    }
 
     function buildBody(q, tab) {
-        var b = { query: q, search_depth: 'basic', include_answer: false };
-        if (tab === 'images') {
-            b.max_results = 20; b.include_images = true; b.include_image_descriptions = true;
-        } else if (tab === 'videos') {
-            b.max_results = 20;
-            b.include_domains = ['youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com'];
-        } else {
-            b.max_results = 10; b.include_images = true; b.include_image_descriptions = true;
-        }
+        var b = { q: q, gl: 'it', hl: 'it' };
+        b.num = tab === 'images' ? 40 : tab === 'videos' ? 20 : 10;
         return b;
+    }
+
+    function normalizeSerper(tab, d) {
+        d = d || {};
+        if (tab === 'images') {
+            return { results: [], images: (d.images || []).map(function (i) {
+                return { url: i.imageUrl, thumb: i.thumbnailUrl, alt: i.title || '', page: i.link || '' };
+            }) };
+        }
+        if (tab === 'videos') {
+            return { images: [], results: (d.videos || []).map(function (v) {
+                return { url: v.link, title: v.title, content: v.snippet || '' };
+            }) };
+        }
+        return { images: [], results: (d.organic || []).map(function (r) {
+            return { url: r.link, title: r.title, content: r.snippet || '' };
+        }) };
     }
 
     function fetchSearch(q, tab) {
         if (!hasKey()) return Promise.reject(new Error('missing_api_key'));
         var ck = 'clicksearch:' + tab + ':' + q.toLowerCase();
         try { var hit = sessionStorage.getItem(ck); if (hit) return Promise.resolve(JSON.parse(hit)); } catch (e) {}
-        return fetch('https://api.tavily.com/search', {
+        return fetch(serperEndpoint(tab), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TAVILY_API_KEY },
+            headers: { 'Content-Type': 'application/json', 'X-API-KEY': SERPER_API_KEY },
             body: JSON.stringify(buildBody(q, tab))
         }).then(function (res) {
             return res.json().catch(function () { return {}; }).then(function (data) {
-                if (res.status === 429 || res.status === 432 || res.status === 433) throw new Error('rate_limited');
-                if (res.status === 401) throw new Error('bad_key');
+                if (res.status === 401 || res.status === 403) throw new Error('bad_key');
+                if (res.status === 429 || /credit/i.test(String(data && data.message))) throw new Error('rate_limited');
                 if (!res.ok) throw new Error('http_' + res.status);
-                try { sessionStorage.setItem(ck, JSON.stringify(data)); } catch (e) {}
-                return data;
+                var out = normalizeSerper(tab, data);
+                try { sessionStorage.setItem(ck, JSON.stringify(out)); } catch (e) {}
+                return out;
             });
         });
     }
@@ -661,9 +676,9 @@
             if (id !== reqId) return;
             var m = String(err && err.message);
             var text = 'Errore nella ricerca, riprova (' + m + ').';
-            if (m === 'missing_api_key') text = 'Manca la chiave: aggiungi il secret TAVILY_API_KEY su GitHub e rilancia la pubblicazione.';
-            else if (m === 'bad_key') text = 'La chiave Tavily non è valida.';
-            else if (m === 'rate_limited') text = 'Troppe richieste o limite mensile raggiunto, riprova più tardi.';
+            if (m === 'missing_api_key') text = 'Manca la chiave: aggiungi il secret SERPER_API_KEY su GitHub e rilancia la pubblicazione.';
+            else if (m === 'bad_key') text = 'La chiave Serper non è valida.';
+            else if (m === 'rate_limited') text = 'Troppe richieste o crediti Serper esauriti, riprova più tardi.';
             else if (err instanceof TypeError) text = 'Connessione assente o bloccata, riprova.';
             setStatus(text, 'err');
         }).then(function () {
@@ -685,7 +700,7 @@
     function normImages(list) {
         return (Array.isArray(list) ? list : []).map(function (im) {
             if (typeof im === 'string') return { url: im, alt: '' };
-            return im ? { url: im.url || im.image_url || '', alt: im.description || im.alt || '', page: im.page || '' } : null;
+            return im ? { url: im.url || im.image_url || '', thumb: im.thumb || '', alt: im.description || im.alt || '', page: im.page || '' } : null;
         }).filter(function (im) { return im && isHttp(im.url); });
     }
     function imgNode(src, alt) {
@@ -740,7 +755,9 @@
             var a = el('a', 'img-card');
             a.href = im.page || im.url; a.target = '_blank'; a.rel = 'noopener'; a.title = im.alt;
             var img = imgNode(im.url, im.alt);
-            img.addEventListener('error', function () { a.remove(); });
+            img.addEventListener('error', function () {
+                if (im.thumb && isHttp(im.thumb) && img.src !== im.thumb) img.src = im.thumb; else a.remove();
+            });
             a.appendChild(img);
             grid.appendChild(a);
         });

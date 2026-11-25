@@ -4,9 +4,9 @@ Motore di ricerca con tre schede: **Tutti**, **Immagini**, **Video**. Pubblicato
 
 ## Chiave API
 
-Nel repo vai su **Settings → Secrets and variables → Actions** e crea il secret `SERPER_API_KEY`.
-Ad ogni push la GitHub Action sostituisce il placeholder `__SERPER_API_KEY__` in `index.html` e pubblica il sito.
+La chiave Serper **non è nel sito né nel repository**: sta come secret del worker Cloudflare `api-gateway` (rotta `/serper`). Il sito chiama il gateway, che aggiunge la chiave lato server.
 
-Vai anche su **Settings → Pages** e imposta *Source* su **GitHub Actions**.
+Per cambiarla: `cd api-gateway && npx wrangler secret put SERPER_API_KEY`.
 
-> Su un sito statico la chiave finisce nel codice pubblicato: nella dashboard Serper conviene tenere il limite di utilizzo basso.
+Vai su **Settings → Pages** e imposta *Source* su **GitHub Actions**.
+

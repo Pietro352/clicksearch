@@ -20,11 +20,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Sostituisci il placeholder con la chiave Serper
-        env:
-          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
-        run: sed -i "s|const SERPER_API_KEY = '__SERPER_API_KEY__';|const SERPER_API_KEY = '${SERPER_API_KEY}';|" index.html
-
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

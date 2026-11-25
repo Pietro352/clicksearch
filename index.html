@@ -354,8 +354,8 @@
 (function () {
     'use strict';
 
-    // La chiave viene inserita al momento della pubblicazione dalla GitHub Action (secret SERPER_API_KEY).
-    const SERPER_API_KEY = '__SERPER_API_KEY__';
+    // La chiave Serper sta nel gateway Cloudflare (repo api-gateway), non nel sito.
+    const API_GATEWAY = 'https://pietro-gateway.pietrobertino.workers.dev';
     // Le immagini extra arrivano da Wikimedia Commons: gratuito, senza chiave.
 
     var TABS = ['all', 'images', 'videos'];
@@ -544,10 +544,8 @@
     });
 
     /* ---------- Ricerca (Serper) ---------- */
-    function hasKey() { return SERPER_API_KEY.indexOf('__') !== 0 && SERPER_API_KEY.length > 8; }
-
     function serperEndpoint(tab) {
-        return 'https://google.serper.dev/' + (tab === 'images' ? 'images' : tab === 'videos' ? 'videos' : 'search');
+        return API_GATEWAY + '/serper/' + (tab === 'images' ? 'images' : tab === 'videos' ? 'videos' : 'search');
     }
 
     function buildBody(q, tab) {
@@ -574,16 +572,16 @@
     }
 
     function fetchSearch(q, tab) {
-        if (!hasKey()) return Promise.reject(new Error('missing_api_key'));
         var ck = 'clicksearch:' + tab + ':' + q.toLowerCase();
         try { var hit = sessionStorage.getItem(ck); if (hit) return Promise.resolve(JSON.parse(hit)); } catch (e) {}
         return fetch(serperEndpoint(tab), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-API-KEY': SERPER_API_KEY },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(buildBody(q, tab))
         }).then(function (res) {
             return res.json().catch(function () { return {}; }).then(function (data) {
-                if (res.status === 401 || res.status === 403) throw new Error('bad_key');
+                if (res.status === 401) throw new Error('bad_key');
+                if (res.status === 403) throw new Error('forbidden');
                 if (res.status === 429 || /credit/i.test(String(data && data.message))) throw new Error('rate_limited');
                 if (!res.ok) throw new Error('http_' + res.status);
                 var out = normalizeSerper(tab, data);
@@ -676,7 +674,7 @@
             if (id !== reqId) return;
             var m = String(err && err.message);
             var text = 'Errore nella ricerca, riprova (' + m + ').';
-            if (m === 'missing_api_key') text = 'Manca la chiave: aggiungi il secret SERPER_API_KEY su GitHub e rilancia la pubblicazione.';
+            if (m === 'forbidden') text = 'Accesso al servizio di ricerca non consentito da questo sito.';
             else if (m === 'bad_key') text = 'La chiave Serper non è valida.';
             else if (m === 'rate_limited') text = 'Troppe richieste o crediti Serper esauriti, riprova più tardi.';
             else if (err instanceof TypeError) text = 'Connessione assente o bloccata, riprova.';
